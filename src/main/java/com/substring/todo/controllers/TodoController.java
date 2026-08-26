@@ -31,6 +31,7 @@ public class TodoController {
     public ResponseEntity<List<Todo>> getAllTodos() {
         List<Todo> todos = todoService.getAllTodos();
         return ResponseEntity.ok(todos);
+        System.out.println("Get all todos endpoint called. Returning todos: " + todos);
     }
 
     // Search Todos: GET /api/v1/todos/search?query=xyz

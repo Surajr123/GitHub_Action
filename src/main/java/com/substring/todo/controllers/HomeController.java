@@ -25,6 +25,7 @@ public class HomeController {
         response.put("status", "OK");
         response.put("message", "Todo Backend API is running successfully");
         response.put("service", "todo-backend");
+        System.out.println("Status endpoint called. Returning response: " + response);
         return ResponseEntity.ok(response);
     }
 }
