@@ -4,7 +4,7 @@ on:
     workflow_dispatch:
     push:
         branches:
-            - main, develop
+            - main
 env:
   APP_NAME: todo-backend
   IMAGE_NAME: ghcr.io/${{ github.repository }}
