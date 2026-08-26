@@ -20,13 +20,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # source coude checkout
+    # source code checkout
       - name: Checkout source code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.1
 
     # setting up java jdk
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6.0.0
         with:
           java-version: "21"
           distribution: "temurin"
@@ -40,7 +40,7 @@ jobs:
       
       # upload artifact id of the application
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: application
           path: target/*.jar
@@ -77,12 +77,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - name: Run Unit Tests
         run: mvn test
 
       - name: Publish Test Report
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@v3.1.0
         if: always()
         with:
           name: Unit Tests
@@ -94,19 +94,20 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - name: SonarQube Scan
-        uses: sonarsource/sonarqube-scan-action@v2
+        uses: sonarsource/sonarqube-scan-action@v8.2.1
         env:
+          GITHUB_TOKEN: ${{ secrets.GIT_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+#          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
   
   # 4. Security Scan (SAST + Dependency + Secrets)
   security-scan:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Trivy FS Scan
         uses: aquasecurity/trivy-action@v0.36.0
@@ -130,13 +131,13 @@ jobs:
     outputs:
       image-tag: ${{ steps.meta.outputs.tags }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Package Application
         run: mvn package -DskipTests
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4.0.0
 
     # Login to dockerhub
       - name: Login to docker hub
@@ -147,7 +148,7 @@ jobs:
 
       - name: Extract Metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6.2.0
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
