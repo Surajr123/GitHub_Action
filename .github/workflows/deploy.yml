@@ -4,13 +4,17 @@ on:
     workflow_dispatch:
     push:
         branches:
-            - main
+            - main, develop
 env:
   APP_NAME: todo-backend
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
   IMAGE_TAG: ${{github.sha}}
   CONTAINER_NAME: todo-backend-app
+  APP_VERSION: ${{ github.run_number }}
+
 
 jobs:
+  # 1. Build
   build:
     name: Build and push image
     runs-on: ubuntu-latest
@@ -20,7 +24,7 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v6
 
-    # setting up java
+    # setting up java jdk
       - name: Setup Java
         uses: actions/setup-java@v5
         with:
@@ -28,11 +32,111 @@ jobs:
           distribution: "temurin"
           cache: maven
 
-    # build sprin gboot project
+      # build spring boot project
       - name: Build Application
         run: |
             chmod +x mvnw
             ./mvnw clean package -DskipTests
+      
+      # upload artifact id of the application
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: application
+          path: target/*.jar
+
+    #  unit-testing:
+    #   name: Unit Tests
+    #   runs-on: ubuntu-latest
+
+    #   steps:
+    #     - name: Checkout
+    #       uses: actions/checkout@v4
+
+    #     - name: Setup Java
+    #       uses: actions/setup-java@v4  
+    #       with:
+    #         distrbution: termuin
+    #         java-version: '21'
+    #         cache: maven
+        
+    #     - name: Run Unit Test
+    #       run: |
+    #        chmod +x mvnw
+    #        ./mvnw test
+        
+    #     - name: Publish Test Results
+    #       uses: actions/upload-artifact@v4
+    #       if: always()
+    #       with:
+    #        name: test-results
+    #        path: target/surefire-reports/   
+
+  # 2. Unit Testing
+  unit-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Unit Tests
+        run: mvn test
+
+      - name: Publish Test Report
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Unit Tests
+          path: target/surefire-reports/*.xml
+          reporter: java-junit
+
+ #3. Static Code Analysis
+  code-quality:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+  
+  # 4. Security Scan (SAST + Dependency + Secrets)
+  security-scan:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy FS Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Secrets Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+
+      - name: CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+    # 5. Package & Build Docker Image
+  package:
+    needs: [code-quality, unit-test, security-scan]
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package Application
+        run: mvn package -DskipTests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
     # Login to dockerhub
       - name: Login to docker hub
@@ -40,6 +144,14 @@ jobs:
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Extract Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ env.APP_VERSION }}
 
     # image build
       - name: Build docker image
@@ -56,8 +168,13 @@ jobs:
           docker push ${{ vars.DOCKERHUB_USERNAME}}/${{env.APP_NAME}}:${{env.IMAGE_TAG}}
           echo "image pushed success"
 
-    # Deploy on ec2:
+      - name: Scan Docker Image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.meta.outputs.tags }}
+          severity: 'CRITICAL,HIGH'
 
+    # Deploy on ec2:
       - name: Deploy on EC2
         uses: appleboy/ssh-action@v1.2.2
         with:
