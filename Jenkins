@@ -1,0 +1,63 @@
+pipeline {
+    agent any
+    environment {
+        DOCKER_IMAGE = "batchlcwd/todo-backend"
+        DOCKER_TAG = "${BUILD_NUMBER}"
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                echo 'Checkout successful'
+                echo 'Testing from github webhook...'
+                echo "Build number ${BUILD_NUMBER}"
+            }
+        }
+        stage("Test") {
+            steps {
+                sh '''
+                chmod +x ./mvnw
+                ./mvnw test
+                '''
+            }
+        }
+        stage("Build") {
+            steps {
+                sh './mvnw clean package -DskipTests'
+            }
+        }
+        stage("Docker build") {
+            steps {
+                sh """
+                            docker build \
+                            -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+                    """
+            }
+        }
+        stage("Docker push") {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-id',
+                        usernameVariable: 'DOCKERHUB_USERNAME',
+                        passwordVariable: 'DOCKERHUB_PASSWORD'
+                    )
+                ]) {
+                    sh '''
+
+                                    echo "$DOCKERHUB_PASSWORD" | docker login \
+                                    -u "$DOCKERHUB_USERNAME" \
+                                    --password-stdin
+
+                                    docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
+
+                                    echo "image pushed success"
+                                    docker image prune -af 
+                                    docker images
+
+                            '''
+                }
+            }
+        }
+    }
+}
