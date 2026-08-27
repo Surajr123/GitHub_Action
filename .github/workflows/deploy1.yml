@@ -3,7 +3,7 @@ name: Deploy Todo Backend with sonarqube
 on:
   push:
     branches:
-      - main,develop
+      - main
 
   workflow_dispatch:
 
