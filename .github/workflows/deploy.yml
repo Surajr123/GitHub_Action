@@ -124,6 +124,8 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
         run: |
+          chmod +x mvnw
+          
           ./mvnw \
             org.sonarsource.scanner.maven:sonar-maven-plugin:5.7.0.6970:sonar \
             -Dsonar.projectKey="${{ vars.SONAR_PROJECT_KEY }}" \
