@@ -19,7 +19,7 @@ jobs:
       pull-requests: write
       checks: write
     steps:
-      - uses: actions/checkout@2ead5e36573f08b82fbfce1504f1a4b05a647c6f
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
