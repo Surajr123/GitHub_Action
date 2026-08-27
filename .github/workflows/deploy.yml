@@ -7,10 +7,9 @@ on:
 
   workflow_dispatch:
 
-# Default permissions: minimum required.
-permissions:
-  contents: read
-
+# ==============================================================
+# GLOBAL ENVIRONMENT
+# ==============================================================
 env:
   APP_NAME: todo-backend
   IMAGE_TAG: ${{ github.sha }}
@@ -19,17 +18,24 @@ env:
 
 jobs:
 
-  # ============================================================
-  # 1. BUILD
-  # ============================================================
+  # ==============================================================
+  # 1. BUILD APPLICATION
+  # ==============================================================
   build:
     name: Build Application
     runs-on: ubuntu-latest
 
     steps:
+
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
       - name: Checkout source code
         uses: actions/checkout@v7.0.1
 
+      # ----------------------------------------------------------
+      # Java
+      # ----------------------------------------------------------
       - name: Setup Java 21
         uses: actions/setup-java@v6.0.0
         with:
@@ -37,11 +43,17 @@ jobs:
           distribution: "temurin"
           cache: maven
 
+      # ----------------------------------------------------------
+      # Maven Build
+      # ----------------------------------------------------------
       - name: Build Application
         run: |
           chmod +x mvnw
           ./mvnw clean package -DskipTests
 
+      # ----------------------------------------------------------
+      # Upload JAR
+      # ----------------------------------------------------------
       - name: Upload Application Artifact
         uses: actions/upload-artifact@v7.0.1
         with:
@@ -49,18 +61,25 @@ jobs:
           path: target/*.jar
 
 
-  # ============================================================
+  # ==============================================================
   # 2. UNIT TESTS
-  # ============================================================
+  # ==============================================================
   unit-test:
     name: Unit Tests
     needs: build
     runs-on: ubuntu-latest
 
     steps:
+
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
       - name: Checkout source code
         uses: actions/checkout@v7.0.1
 
+      # ----------------------------------------------------------
+      # Java
+      # ----------------------------------------------------------
       - name: Setup Java 21
         uses: actions/setup-java@v6.0.0
         with:
@@ -68,11 +87,17 @@ jobs:
           distribution: "temurin"
           cache: maven
 
+      # ----------------------------------------------------------
+      # Run Tests
+      # ----------------------------------------------------------
       - name: Run Unit Tests
         run: |
           chmod +x mvnw
           ./mvnw test
 
+      # ----------------------------------------------------------
+      # Test Report
+      # ----------------------------------------------------------
       - name: Publish Test Report
         uses: dorny/test-reporter@v2.2.0
         if: always()
@@ -82,18 +107,27 @@ jobs:
           reporter: java-junit
 
 
-  # ============================================================
-  # 3. SONARQUBE
-  # ============================================================
+  # ==============================================================
+  # 3. SONARQUBE CLOUD
+  # ==============================================================
   code-quality:
-    name: Code Quality
+    name: SonarQube Cloud Analysis
     needs: build
     runs-on: ubuntu-latest
 
     steps:
+
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
       - name: Checkout source code
         uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
+      # ----------------------------------------------------------
+      # Java
+      # ----------------------------------------------------------
       - name: Setup Java 21
         uses: actions/setup-java@v6.0.0
         with:
@@ -101,38 +135,56 @@ jobs:
           distribution: "temurin"
           cache: maven
 
-      - name: Compile Application
-        run: |
-          chmod +x mvnw
-          ./mvnw compile
-
-      - name: SonarQube Scan
-        uses: sonarsource/sonarqube-scan-action@v8.2.1
+      # ----------------------------------------------------------
+      # SonarQube Cloud
+      #
+      # Required GitHub variables:
+      #
+      # SONAR_PROJECT_KEY
+      # SONAR_ORGANIZATION
+      #
+      # Required GitHub secret:
+      #
+      # SONAR_TOKEN
+      # ----------------------------------------------------------
+      - name: SonarQube Cloud Scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          chmod +x mvnw
 
-          # Uncomment for self-hosted SonarQube Server:
-          # SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+          ./mvnw clean verify sonar:sonar \
+            -Dsonar.projectKey="${{ vars.SONAR_PROJECT_KEY }}" \
+            -Dsonar.organization="${{ vars.SONAR_ORGANIZATION }}" \
+            -Dsonar.host.url="https://sonarcloud.io"
 
 
-  # ============================================================
-  # 4. SECURITY
-  # ============================================================
+  # ==============================================================
+  # 4. SECURITY SCAN
+  # ==============================================================
   security-scan:
     name: Security Scan
     needs: build
     runs-on: ubuntu-latest
 
     permissions:
+      actions: read
       contents: read
       security-events: write
 
     steps:
+
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
       - name: Checkout source code
         uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
+      # ----------------------------------------------------------
+      # Java
+      # ----------------------------------------------------------
       - name: Setup Java 21
         uses: actions/setup-java@v6.0.0
         with:
@@ -140,9 +192,9 @@ jobs:
           distribution: "temurin"
           cache: maven
 
-      # --------------------------------------------------------
-      # Trivy filesystem scan
-      # --------------------------------------------------------
+      # ==========================================================
+      # TRIVY FILESYSTEM SCAN
+      # ==========================================================
       - name: Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -151,33 +203,39 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
 
-      # --------------------------------------------------------
-      # TruffleHog secret scan
-      # --------------------------------------------------------
+      # ==========================================================
+      # TRUFFLEHOG SECRET SCAN
+      # ==========================================================
       - name: TruffleHog Secrets Scan
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
           extra_args: --results=verified,unknown
 
-      # --------------------------------------------------------
-      # CodeQL
-      # --------------------------------------------------------
+      # ==========================================================
+      # CODEQL INITIALIZATION
+      # ==========================================================
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: java
 
+      # ==========================================================
+      # CODEQL BUILD
+      # ==========================================================
       - name: CodeQL Autobuild
         uses: github/codeql-action/autobuild@v4
 
+      # ==========================================================
+      # CODEQL ANALYSIS
+      # ==========================================================
       - name: CodeQL Analysis
         uses: github/codeql-action/analyze@v4
 
 
-  # ============================================================
+  # ==============================================================
   # 5. DOCKER BUILD + PUSH
-  # ============================================================
+  # ==============================================================
   package:
     name: Build and Push Docker Image
 
@@ -189,9 +247,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
       - name: Checkout source code
         uses: actions/checkout@v7.0.1
 
+      # ----------------------------------------------------------
+      # Java
+      # ----------------------------------------------------------
       - name: Setup Java 21
         uses: actions/setup-java@v6.0.0
         with:
@@ -199,29 +264,32 @@ jobs:
           distribution: "temurin"
           cache: maven
 
+      # ----------------------------------------------------------
+      # Package Application
+      # ----------------------------------------------------------
       - name: Package Application
         run: |
           chmod +x mvnw
           ./mvnw package -DskipTests
 
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
       # Docker Buildx
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.0.0
 
-      # --------------------------------------------------------
-      # Docker Hub login
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
+      # Docker Hub Login
+      # ----------------------------------------------------------
       - name: Login to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
-      # --------------------------------------------------------
-      # Docker metadata
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
+      # Docker Metadata
+      # ----------------------------------------------------------
       - name: Extract Docker Metadata
         id: meta
         uses: docker/metadata-action@v6.2.0
@@ -231,22 +299,24 @@ jobs:
             type=raw,value=${{ env.IMAGE_TAG }}
             type=raw,value=${{ env.APP_VERSION }}
 
-      # --------------------------------------------------------
-      # Build + Push
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
+      # Build + Push Docker Image
+      # ----------------------------------------------------------
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v7
         with:
           context: .
           push: true
+
           tags: |
             ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}
             ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.APP_VERSION }}
+
           labels: ${{ steps.meta.outputs.labels }}
 
-      # --------------------------------------------------------
-      # Scan pushed Docker image
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
+      # Trivy Docker Image Scan
+      # ----------------------------------------------------------
       - name: Scan Docker Image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -255,9 +325,9 @@ jobs:
           ignore-unfixed: true
 
 
-  # ============================================================
+  # ==============================================================
   # 6. DEPLOY TO EC2
-  # ============================================================
+  # ==============================================================
   deploy:
     name: Deploy to EC2
 
@@ -267,7 +337,10 @@ jobs:
 
     steps:
 
-      - name: Deploy Application
+      # ----------------------------------------------------------
+      # SSH Deployment
+      # ----------------------------------------------------------
+      - name: Deploy Application to EC2
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ vars.EC2_HOST }}
@@ -275,28 +348,56 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
 
           script: |
+
+            # ====================================================
+            # Variables
+            # ====================================================
+
             set -e
 
             IMAGE="${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}"
             CONTAINER="${{ env.CONTAINER_NAME }}"
 
-            echo "========================================="
+            echo "=========================================="
             echo "Starting deployment"
-            echo "Image: $IMAGE"
-            echo "Container: $CONTAINER"
-            echo "========================================="
+            echo "=========================================="
+
+            echo "Application : ${{ env.APP_NAME }}"
+            echo "Version     : ${{ env.APP_VERSION }}"
+            echo "Image Tag   : ${{ env.IMAGE_TAG }}"
+            echo "Container   : $CONTAINER"
+
+            echo "=========================================="
+
+            # ====================================================
+            # Pull new image
+            # ====================================================
 
             echo "Pulling Docker image..."
 
             docker pull "$IMAGE"
 
-            echo "Stopping old container..."
+            echo "Docker image pulled successfully."
+
+            # ====================================================
+            # Stop existing container
+            # ====================================================
+
+            echo "Stopping existing container..."
 
             docker stop "$CONTAINER" || true
 
-            echo "Removing old container..."
+            # ====================================================
+            # Remove existing container
+            # ====================================================
+
+            echo "Removing existing container..."
 
             docker rm "$CONTAINER" || true
+
+            # ====================================================
+            # Start new container
+            # ====================================================
 
             echo "Starting new container..."
 
@@ -306,45 +407,94 @@ jobs:
               -p 8080:8080 \
               "$IMAGE"
 
-            echo "Waiting for container to start..."
+            echo "Container started."
 
-            sleep 10
+            # ====================================================
+            # Wait for Spring Boot
+            # ====================================================
+
+            echo "Waiting for application to start..."
+
+            sleep 15
+
+            # ====================================================
+            # Check container
+            # ====================================================
 
             echo "Checking container status..."
 
             if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
-              echo "Container is running."
-            else
-              echo "Container failed to start."
-              echo ""
-              echo "Container logs:"
-              docker logs "$CONTAINER" || true
-              exit 1
-            fi
 
-            echo "Checking application port..."
-
-            if curl --fail --silent --show-error \
-              http://localhost:8080/actuator/health; then
-
-              echo ""
-              echo "Application health check passed."
+              echo "Container is running successfully."
 
             else
 
-              echo "Health endpoint unavailable or unhealthy."
+              echo "ERROR: Container failed to start."
 
-              echo ""
-              echo "Container logs:"
+              echo "=========================================="
+              echo "Container logs"
+              echo "=========================================="
+
               docker logs "$CONTAINER" || true
 
               exit 1
+
             fi
 
-            echo "Removing unused Docker images..."
+            # ====================================================
+            # Optional Spring Boot Health Check
+            # ====================================================
+            #
+            # Enable this if you have:
+            #
+            # spring-boot-starter-actuator
+            #
+            # and:
+            #
+            # /actuator/health
+            #
+            # Uncomment the following section.
+            # ====================================================
+
+            # echo "Checking Spring Boot health..."
+            #
+            # if curl --fail --silent --show-error \
+            #   http://localhost:8080/actuator/health; then
+            #
+            #   echo "Application health check passed."
+            #
+            # else
+            #
+            #   echo "ERROR: Application health check failed."
+            #
+            #   docker logs "$CONTAINER" || true
+            #
+            #   exit 1
+            #
+            # fi
+
+            # ====================================================
+            # Display running containers
+            # ====================================================
+
+            echo "=========================================="
+            echo "Running containers"
+            echo "=========================================="
+
+            docker ps
+
+            # ====================================================
+            # Cleanup
+            # ====================================================
+
+            echo "Cleaning unused Docker images..."
 
             docker image prune -f
 
-            echo "========================================="
+            # ====================================================
+            # Deployment Complete
+            # ====================================================
+
+            echo "=========================================="
             echo "Deployment successful!"
-            echo "========================================="
+            echo "=========================================="
