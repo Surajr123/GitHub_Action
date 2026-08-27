@@ -1,197 +1,350 @@
 name: Deploy Todo Backend
 
 on:
-    workflow_dispatch:
-    push:
-        branches:
-            - main
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+# Default permissions: minimum required.
+permissions:
+  contents: read
+
 env:
   APP_NAME: todo-backend
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
-  IMAGE_TAG: ${{github.sha}}
+  IMAGE_TAG: ${{ github.sha }}
   CONTAINER_NAME: todo-backend-app
   APP_VERSION: ${{ github.run_number }}
 
-
 jobs:
-  # 1. Build
+
+  # ============================================================
+  # 1. BUILD
+  # ============================================================
   build:
-    name: Build and push image
+    name: Build Application
     runs-on: ubuntu-latest
 
     steps:
-    # source code checkout
       - name: Checkout source code
         uses: actions/checkout@v7.0.1
 
-    # setting up java jdk
-      - name: Setup Java
+      - name: Setup Java 21
         uses: actions/setup-java@v6.0.0
         with:
           java-version: "21"
           distribution: "temurin"
           cache: maven
 
-      # build spring boot project
       - name: Build Application
         run: |
-            chmod +x mvnw
-            ./mvnw clean package -DskipTests
-      
-      # upload artifact id of the application
-      - name: Upload Artifact
+          chmod +x mvnw
+          ./mvnw clean package -DskipTests
+
+      - name: Upload Application Artifact
         uses: actions/upload-artifact@v7.0.1
         with:
           name: application
           path: target/*.jar
 
-    #  unit-testing:
-    #   name: Unit Tests
-    #   runs-on: ubuntu-latest
 
-    #   steps:
-    #     - name: Checkout
-    #       uses: actions/checkout@v4
-
-    #     - name: Setup Java
-    #       uses: actions/setup-java@v4  
-    #       with:
-    #         distrbution: termuin
-    #         java-version: '21'
-    #         cache: maven
-        
-    #     - name: Run Unit Test
-    #       run: |
-    #        chmod +x mvnw
-    #        ./mvnw test
-        
-    #     - name: Publish Test Results
-    #       uses: actions/upload-artifact@v4
-    #       if: always()
-    #       with:
-    #        name: test-results
-    #        path: target/surefire-reports/   
-
-  # 2. Unit Testing
+  # ============================================================
+  # 2. UNIT TESTS
+  # ============================================================
   unit-test:
+    name: Unit Tests
     needs: build
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v7.0.1
+      - name: Checkout source code
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v6.0.0
+        with:
+          java-version: "21"
+          distribution: "temurin"
+          cache: maven
+
       - name: Run Unit Tests
-        run: mvn test
+        run: |
+          chmod +x mvnw
+          ./mvnw test
 
       - name: Publish Test Report
-        uses: dorny/test-reporter@v3.1.0
+        uses: dorny/test-reporter@v2.2.0
         if: always()
         with:
           name: Unit Tests
           path: target/surefire-reports/*.xml
           reporter: java-junit
 
- #3. Static Code Analysis
+
+  # ============================================================
+  # 3. SONARQUBE
+  # ============================================================
   code-quality:
+    name: Code Quality
     needs: build
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v7.0.1
+      - name: Checkout source code
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v6.0.0
+        with:
+          java-version: "21"
+          distribution: "temurin"
+          cache: maven
+
+      - name: Compile Application
+        run: |
+          chmod +x mvnw
+          ./mvnw compile
+
       - name: SonarQube Scan
         uses: sonarsource/sonarqube-scan-action@v8.2.1
         env:
-          GITHUB_TOKEN: ${{ secrets.GIT_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-#          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-  
-  # 4. Security Scan (SAST + Dependency + Secrets)
+
+          # Uncomment for self-hosted SonarQube Server:
+          # SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+
+
+  # ============================================================
+  # 4. SECURITY
+  # ============================================================
   security-scan:
+    name: Security Scan
     needs: build
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7.0.1
 
-      - name: Trivy FS Scan
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v6.0.0
+        with:
+          java-version: "21"
+          distribution: "temurin"
+          cache: maven
+
+      # --------------------------------------------------------
+      # Trivy filesystem scan
+      # --------------------------------------------------------
+      - name: Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          severity: 'CRITICAL,HIGH'
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
 
-      - name: Secrets Scan
+      # --------------------------------------------------------
+      # TruffleHog secret scan
+      # --------------------------------------------------------
+      - name: TruffleHog Secrets Scan
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
+          extra_args: --results=verified,unknown
+
+      # --------------------------------------------------------
+      # CodeQL
+      # --------------------------------------------------------
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: java
+
+      - name: CodeQL Autobuild
+        uses: github/codeql-action/autobuild@v4
 
       - name: CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
 
-    # 5. Package & Build Docker Image
+
+  # ============================================================
+  # 5. DOCKER BUILD + PUSH
+  # ============================================================
   package:
-    needs: [code-quality, unit-test, security-scan]
+    name: Build and Push Docker Image
+
+    needs:
+      - unit-test
+      - code-quality
+      - security-scan
+
     runs-on: ubuntu-latest
-    outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
+
     steps:
-      - uses: actions/checkout@v7.0.1
+      - name: Checkout source code
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v6.0.0
+        with:
+          java-version: "21"
+          distribution: "temurin"
+          cache: maven
 
       - name: Package Application
-        run: mvn package -DskipTests
+        run: |
+          chmod +x mvnw
+          ./mvnw package -DskipTests
 
+      # --------------------------------------------------------
+      # Docker Buildx
+      # --------------------------------------------------------
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.0.0
 
-    # Login to dockerhub
-      - name: Login to docker hub
+      # --------------------------------------------------------
+      # Docker Hub login
+      # --------------------------------------------------------
+      - name: Login to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
-      - name: Extract Metadata
+      # --------------------------------------------------------
+      # Docker metadata
+      # --------------------------------------------------------
+      - name: Extract Docker Metadata
         id: meta
         uses: docker/metadata-action@v6.2.0
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}
           tags: |
+            type=raw,value=${{ env.IMAGE_TAG }}
             type=raw,value=${{ env.APP_VERSION }}
 
-    # image build
-      - name: Build docker image
-        run: |
-          docker build \
-          -t ${{ vars.DOCKERHUB_USERNAME}}/${{env.APP_NAME}}:${{env.IMAGE_TAG}} \
-          .
-          echo "image build success"
-          docker images
+      # --------------------------------------------------------
+      # Build + Push
+      # --------------------------------------------------------
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.APP_VERSION }}
+          labels: ${{ steps.meta.outputs.labels }}
 
-    # image push
-      - name: Push the docker image
-        run: |
-          docker push ${{ vars.DOCKERHUB_USERNAME}}/${{env.APP_NAME}}:${{env.IMAGE_TAG}}
-          echo "image pushed success"
-
+      # --------------------------------------------------------
+      # Scan pushed Docker image
+      # --------------------------------------------------------
       - name: Scan Docker Image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ steps.meta.outputs.tags }}
-          severity: 'CRITICAL,HIGH'
+          image-ref: ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
 
-    # Deploy on ec2:
-      - name: Deploy on EC2
+
+  # ============================================================
+  # 6. DEPLOY TO EC2
+  # ============================================================
+  deploy:
+    name: Deploy to EC2
+
+    needs: package
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Deploy Application
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ vars.EC2_HOST }}
           username: ${{ vars.EC2_USERNAME }}
-          key: ${{secrets.EC2_PASSWORD}}
+          key: ${{ secrets.EC2_SSH_KEY }}
+
           script: |
-            docker pull ${{ vars.DOCKERHUB_USERNAME}}/${{env.APP_NAME}}:${{env.IMAGE_TAG}}
-            docker stop ${{env.CONTAINER_NAME}} || true
-            docker rm ${{env.CONTAINER_NAME}} || true
+            set -e
+
+            IMAGE="${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}"
+            CONTAINER="${{ env.CONTAINER_NAME }}"
+
+            echo "========================================="
+            echo "Starting deployment"
+            echo "Image: $IMAGE"
+            echo "Container: $CONTAINER"
+            echo "========================================="
+
+            echo "Pulling Docker image..."
+
+            docker pull "$IMAGE"
+
+            echo "Stopping old container..."
+
+            docker stop "$CONTAINER" || true
+
+            echo "Removing old container..."
+
+            docker rm "$CONTAINER" || true
+
+            echo "Starting new container..."
+
             docker run -d \
-              --name ${{env.CONTAINER_NAME}} \
+              --name "$CONTAINER" \
+              --restart unless-stopped \
               -p 8080:8080 \
-              ${{ vars.DOCKERHUB_USERNAME}}/${{env.APP_NAME}}:${{env.IMAGE_TAG}}
+              "$IMAGE"
+
+            echo "Waiting for container to start..."
+
+            sleep 10
+
+            echo "Checking container status..."
+
+            if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
+              echo "Container is running."
+            else
+              echo "Container failed to start."
+              echo ""
+              echo "Container logs:"
+              docker logs "$CONTAINER" || true
+              exit 1
+            fi
+
+            echo "Checking application port..."
+
+            if curl --fail --silent --show-error \
+              http://localhost:8080/actuator/health; then
+
+              echo ""
+              echo "Application health check passed."
+
+            else
+
+              echo "Health endpoint unavailable or unhealthy."
+
+              echo ""
+              echo "Container logs:"
+              docker logs "$CONTAINER" || true
+
+              exit 1
+            fi
+
+            echo "Removing unused Docker images..."
+
             docker image prune -f
-            echo "deployment successful !!"
 
-
-
+            echo "========================================="
+            echo "Deployment successful!"
+            echo "========================================="
