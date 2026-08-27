@@ -1,522 +1,522 @@
-name: Deploy Todo Backend
-
-on:
-  push:
-    branches:
-      - main
-
-  workflow_dispatch:
-
-# ==============================================================
-# GLOBAL ENVIRONMENT
-# ==============================================================
-
-env:
-  APP_NAME: todo-backend
-  CONTAINER_NAME: todo-backend-app
-  IMAGE_TAG: ${{ github.sha }}
-  APP_VERSION: ${{ github.run_number }}
-
-# ==============================================================
-# JOBS
-# ==============================================================
-
-jobs:
-
-  # ============================================================
-  # 1. BUILD + UNIT TEST + JACOCO + SONARCLOUD
-  #
-  # Maven runs only ONCE here.
-  # ============================================================
-
-  build-test-quality:
-    name: Build, Test & SonarCloud
-    runs-on: ubuntu-latest
-
-    steps:
-
-      # ----------------------------------------------------------
-      # Checkout
-      # ----------------------------------------------------------
-
-      - name: Checkout source code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-
-      # ----------------------------------------------------------
-      # Java 21
-      # ----------------------------------------------------------
-
-      - name: Setup Java 21
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
-        with:
-          java-version: "21"
-          distribution: "temurin"
-          cache: maven
-
-      # ----------------------------------------------------------
-      # Make Maven Wrapper executable
-      # ----------------------------------------------------------
-
-      - name: Make Maven Wrapper executable
-        run: chmod +x mvnw
-
-      # ----------------------------------------------------------
-      # Build + Unit Tests + JaCoCo
-      #
-      # verify will:
-      #
-      # compile
-      # test
-      # generate JaCoCo report
-      # package application
-      #
-      # ----------------------------------------------------------
-
-      - name: Build and Test Application
-        run: |
-          ./mvnw clean verify
-
-      # ----------------------------------------------------------
-      # Publish JUnit Test Report
-      # ----------------------------------------------------------
-
-      - name: Publish Test Report
-        if: always()
-        uses: dorny/test-reporter@7b7927aa7da8b82e81e755810cb51f39941a2cc7
-        with:
-          name: Unit Tests
-          path: target/surefire-reports/*.xml
-          reporter: java-junit
-
-      # ----------------------------------------------------------
-      # Display JaCoCo report
-      # ----------------------------------------------------------
-
-      - name: Verify JaCoCo Report
-        run: |
-          if [ -f target/site/jacoco/jacoco.xml ]; then
-            echo "JaCoCo report generated successfully."
-            ls -lh target/site/jacoco/jacoco.xml
-          else
-            echo "ERROR: JaCoCo report was not generated."
-            exit 1
-          fi
-
-      # ----------------------------------------------------------
-      # SonarCloud
-      #
-      # IMPORTANT:
-      #
-      # SONAR_PROJECT_KEY
-      # SONAR_ORGANIZATION
-      #
-      # must exist as GitHub repository variables.
-      #
-      # SONAR_TOKEN
-      #
-      # must exist as a GitHub repository secret.
-      # ----------------------------------------------------------
-
-      - name: SonarCloud Analysis
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-        run: |
-          chmod +x mvnw
-
-          ./mvnw \
-            org.sonarsource.scanner.maven:sonar-maven-plugin:5.7.0.6970:sonar \
-            -Dsonar.projectKey="${{ vars.SONAR_PROJECT_KEY }}" \
-            -Dsonar.organization="${{ vars.SONAR_ORGANIZATION }}" \
-            -Dsonar.host.url="https://sonarcloud.io" \
-            -Dsonar.coverage.jacoco.xmlReportPaths="target/site/jacoco/jacoco.xml" \
-            -Dsonar.qualitygate.wait=true
-
-      # ----------------------------------------------------------
-      # Upload JAR for Docker job
-      # ----------------------------------------------------------
-
-      - name: Upload Application Artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: application
-          path: target/*.jar
-          if-no-files-found: error
-
-
-  # ============================================================
-  # 2. SECURITY SCAN
-  #
-  # This runs in parallel with the Maven/Sonar job.
-  # No Maven build is necessary here.
-  # ============================================================
-
-  security-scan:
-    name: Security Scan
-    runs-on: ubuntu-latest
-
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-
-    steps:
-
-      # ----------------------------------------------------------
-      # Checkout
-      # ----------------------------------------------------------
-
-      - name: Checkout source code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-
-      # ========================================================
-      # TRIVY FILESYSTEM SCAN
-      # ========================================================
-
-      - name: Trivy Filesystem Scan
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
-        with:
-          scan-type: fs
-          scan-ref: .
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-
-      # ========================================================
-      # TRUFFLEHOG SECRET SCAN
-      # ========================================================
-
-      - name: TruffleHog Secrets Scan
-        uses: trufflesecurity/trufflehog@1ea7fc1960b818e3c3ac3984f85922e3acba4061
-        with:
-          path: ./
-          extra_args: --results=verified,unknown
-
-      # ========================================================
-      # CODEQL
-      #
-      # Java supports build-mode: none.
-      #
-      # This avoids another Maven build.
-      # ========================================================
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938
-        with:
-          languages: java
-          build-mode: none
-
-      # ----------------------------------------------------------
-      # CodeQL Analysis
-      # ----------------------------------------------------------
-
-      - name: CodeQL Analysis
-        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938
-        with:
-          category: "/language:java"
-
-
-  # ============================================================
-  # 3. DOCKER BUILD + PUSH + IMAGE SECURITY SCAN
-  #
-  # Runs only after:
-  #
-  # build-test-quality
-  # security-scan
-  #
-  # succeeds.
-  # ============================================================
-
-  docker:
-    name: Build, Scan & Push Docker Image
-
-    needs:
-      - build-test-quality
-      - security-scan
-
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-
-    steps:
-
-      # ----------------------------------------------------------
-      # Checkout
-      # ----------------------------------------------------------
-
-      - name: Checkout source code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      # ----------------------------------------------------------
-      # Download JAR generated by Maven job
-      # ----------------------------------------------------------
-
-      - name: Download Application Artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: application
-          path: target
-
-      # ----------------------------------------------------------
-      # Show artifact
-      # ----------------------------------------------------------
-
-      - name: Verify Application Artifact
-        run: |
-          echo "Application artifact:"
-          ls -lh target/
-
-      # ----------------------------------------------------------
-      # Setup Docker Buildx
-      # ----------------------------------------------------------
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
-
-      # ----------------------------------------------------------
-      # Login Docker Hub
-      # ----------------------------------------------------------
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@0a596b2e7a325f0cedf8e9bd21ab002cbd3c9241
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-      # ----------------------------------------------------------
-      # Docker Metadata
-      # ----------------------------------------------------------
-
-      - name: Extract Docker Metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
-        with:
-          images: ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}
-          tags: |
-            type=raw,value=${{ env.IMAGE_TAG }}
-            type=raw,value=${{ env.APP_VERSION }}
-
-      # ----------------------------------------------------------
-      # Build and Push Docker Image
-      # ----------------------------------------------------------
-
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
-        with:
-          context: .
-          push: true
-
-          tags: |
-            ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}
-            ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.APP_VERSION }}
-
-          labels: ${{ steps.meta.outputs.labels }}
-
-      # ----------------------------------------------------------
-      # Trivy Docker Image Scan
-      # ----------------------------------------------------------
-
-      - name: Scan Docker Image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
-        with:
-          image-ref: ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-
-
-  # ============================================================
-  # 4. DEPLOY TO EC2
-  # ============================================================
-
-  deploy:
-    name: Deploy to EC2
-
-    needs:
-      - docker
-
-    runs-on: ubuntu-latest
-
-    steps:
-
-      # ----------------------------------------------------------
-      # Deploy
-      # ----------------------------------------------------------
-
-      - name: Deploy Application to EC2
-        uses: appleboy/ssh-action@2ead5e36573f08b82fbfce1504f1a4b05a647c6f
-        with:
-          host: ${{ vars.EC2_HOST }}
-          username: ${{ vars.EC2_USERNAME }}
-          key: ${{ secrets.EC2_PASSWORD }}
-
-          script: |
-
-            set -e
-
-            # ==================================================
-            # Variables
-            # ==================================================
-
-            IMAGE="${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}"
-            CONTAINER="${{ env.CONTAINER_NAME }}"
-
-            echo "=========================================="
-            echo "Starting deployment"
-            echo "=========================================="
-
-            echo "Application : ${{ env.APP_NAME }}"
-            echo "Version     : ${{ env.APP_VERSION }}"
-            echo "Image       : $IMAGE"
-            echo "Container   : $CONTAINER"
-
-            echo "=========================================="
-
-            # ==================================================
-            # Pull image
-            # ==================================================
-
-            echo "Pulling Docker image..."
-
-            docker pull "$IMAGE"
-
-            echo "Image pulled successfully."
-
-            # ==================================================
-            # Stop old container
-            # ==================================================
-
-            echo "Stopping existing container..."
-
-            docker stop "$CONTAINER" || true
-
-            # ==================================================
-            # Remove old container
-            # ==================================================
-
-            echo "Removing existing container..."
-
-            docker rm "$CONTAINER" || true
-
-            # ==================================================
-            # Start new container
-            # ==================================================
-
-            echo "Starting new container..."
-
-            docker run -d \
-              --name "$CONTAINER" \
-              --restart unless-stopped \
-              -p 8080:8080 \
-              "$IMAGE"
-
-            echo "Container started."
-
-            # ==================================================
-            # Wait for Spring Boot
-            # ==================================================
-
-            echo "Waiting for Spring Boot..."
-
-            sleep 15
-
-            # ==================================================
-            # Check container
-            # ==================================================
-
-            echo "Checking container status..."
-
-            if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
-
-              echo "Container is running."
-
-            else
-
-              echo "ERROR: Container failed to start."
-
-              echo "=========================================="
-              echo "Container logs"
-              echo "=========================================="
-
-              docker logs "$CONTAINER" || true
-
-              exit 1
-
-            fi
-
-            # ==================================================
-            # Spring Boot Actuator Health Check
-            #
-            # You already have spring-boot-starter-actuator
-            # in your pom.xml.
-            # ==================================================
-
-            echo "Checking Spring Boot health..."
-
-            HEALTH_OK=false
-
-            for i in {1..12}; do
-
-              if curl \
-                --fail \
-                --silent \
-                --show-error \
-                http://localhost:8080/actuator/health; then
-
-                echo ""
-                echo "Application health check passed."
-
-                HEALTH_OK=true
-                break
-
-              fi
-
-              echo "Health check attempt $i failed."
-              echo "Waiting 5 seconds..."
-
-              sleep 5
-
-            done
-
-            if [ "$HEALTH_OK" != "true" ]; then
-
-              echo "ERROR: Application health check failed."
-
-              echo "=========================================="
-              echo "Container logs"
-              echo "=========================================="
-
-              docker logs "$CONTAINER" || true
-
-              exit 1
-
-            fi
-
-            # ==================================================
-            # Running containers
-            # ==================================================
-
-            echo "=========================================="
-            echo "Running containers"
-            echo "=========================================="
-
-            docker ps
-
-            # ==================================================
-            # Cleanup
-            # ==================================================
-
-            echo "Cleaning unused Docker images..."
-
-            docker image prune -f
-
-            # ==================================================
-            # Deployment successful
-            # ==================================================
-
-            echo "=========================================="
-            echo "Deployment successful!"
-            echo "=========================================="
+#name: Deploy Todo Backend
+#
+#on:
+#  push:
+#    branches:
+#      - main
+#
+#  workflow_dispatch:
+#
+## ==============================================================
+## GLOBAL ENVIRONMENT
+## ==============================================================
+#
+#env:
+#  APP_NAME: todo-backend
+#  CONTAINER_NAME: todo-backend-app
+#  IMAGE_TAG: ${{ github.sha }}
+#  APP_VERSION: ${{ github.run_number }}
+#
+## ==============================================================
+## JOBS
+## ==============================================================
+#
+#jobs:
+#
+#  # ============================================================
+#  # 1. BUILD + UNIT TEST + JACOCO + SONARCLOUD
+#  #
+#  # Maven runs only ONCE here.
+#  # ============================================================
+#
+#  build-test-quality:
+#    name: Build, Test & SonarCloud
+#    runs-on: ubuntu-latest
+#
+#    steps:
+#
+#      # ----------------------------------------------------------
+#      # Checkout
+#      # ----------------------------------------------------------
+#
+#      - name: Checkout source code
+#        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+#        with:
+#          fetch-depth: 0
+#
+#      # ----------------------------------------------------------
+#      # Java 21
+#      # ----------------------------------------------------------
+#
+#      - name: Setup Java 21
+#        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+#        with:
+#          java-version: "21"
+#          distribution: "temurin"
+#          cache: maven
+#
+#      # ----------------------------------------------------------
+#      # Make Maven Wrapper executable
+#      # ----------------------------------------------------------
+#
+#      - name: Make Maven Wrapper executable
+#        run: chmod +x mvnw
+#
+#      # ----------------------------------------------------------
+#      # Build + Unit Tests + JaCoCo
+#      #
+#      # verify will:
+#      #
+#      # compile
+#      # test
+#      # generate JaCoCo report
+#      # package application
+#      #
+#      # ----------------------------------------------------------
+#
+#      - name: Build and Test Application
+#        run: |
+#          ./mvnw clean verify
+#
+#      # ----------------------------------------------------------
+#      # Publish JUnit Test Report
+#      # ----------------------------------------------------------
+#
+#      - name: Publish Test Report
+#        if: always()
+#        uses: dorny/test-reporter@7b7927aa7da8b82e81e755810cb51f39941a2cc7
+#        with:
+#          name: Unit Tests
+#          path: target/surefire-reports/*.xml
+#          reporter: java-junit
+#
+#      # ----------------------------------------------------------
+#      # Display JaCoCo report
+#      # ----------------------------------------------------------
+#
+#      - name: Verify JaCoCo Report
+#        run: |
+#          if [ -f target/site/jacoco/jacoco.xml ]; then
+#            echo "JaCoCo report generated successfully."
+#            ls -lh target/site/jacoco/jacoco.xml
+#          else
+#            echo "ERROR: JaCoCo report was not generated."
+#            exit 1
+#          fi
+#
+#      # ----------------------------------------------------------
+#      # SonarCloud
+#      #
+#      # IMPORTANT:
+#      #
+#      # SONAR_PROJECT_KEY
+#      # SONAR_ORGANIZATION
+#      #
+#      # must exist as GitHub repository variables.
+#      #
+#      # SONAR_TOKEN
+#      #
+#      # must exist as a GitHub repository secret.
+#      # ----------------------------------------------------------
+#
+#      - name: SonarCloud Analysis
+#        env:
+#          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+#
+#        run: |
+#          chmod +x mvnw
+#
+#          ./mvnw \
+#            org.sonarsource.scanner.maven:sonar-maven-plugin:5.7.0.6970:sonar \
+#            -Dsonar.projectKey="${{ vars.SONAR_PROJECT_KEY }}" \
+#            -Dsonar.organization="${{ vars.SONAR_ORGANIZATION }}" \
+#            -Dsonar.host.url="https://sonarcloud.io" \
+#            -Dsonar.coverage.jacoco.xmlReportPaths="target/site/jacoco/jacoco.xml" \
+#            -Dsonar.qualitygate.wait=true
+#
+#      # ----------------------------------------------------------
+#      # Upload JAR for Docker job
+#      # ----------------------------------------------------------
+#
+#      - name: Upload Application Artifact
+#        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+#        with:
+#          name: application
+#          path: target/*.jar
+#          if-no-files-found: error
+#
+#
+#  # ============================================================
+#  # 2. SECURITY SCAN
+#  #
+#  # This runs in parallel with the Maven/Sonar job.
+#  # No Maven build is necessary here.
+#  # ============================================================
+#
+#  security-scan:
+#    name: Security Scan
+#    runs-on: ubuntu-latest
+#
+#    permissions:
+#      actions: read
+#      contents: read
+#      security-events: write
+#
+#    steps:
+#
+#      # ----------------------------------------------------------
+#      # Checkout
+#      # ----------------------------------------------------------
+#
+#      - name: Checkout source code
+#        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+#        with:
+#          fetch-depth: 0
+#
+#      # ========================================================
+#      # TRIVY FILESYSTEM SCAN
+#      # ========================================================
+#
+#      - name: Trivy Filesystem Scan
+#        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+#        with:
+#          scan-type: fs
+#          scan-ref: .
+#          severity: CRITICAL,HIGH
+#          ignore-unfixed: true
+#
+#      # ========================================================
+#      # TRUFFLEHOG SECRET SCAN
+#      # ========================================================
+#
+#      - name: TruffleHog Secrets Scan
+#        uses: trufflesecurity/trufflehog@1ea7fc1960b818e3c3ac3984f85922e3acba4061
+#        with:
+#          path: ./
+#          extra_args: --results=verified,unknown
+#
+#      # ========================================================
+#      # CODEQL
+#      #
+#      # Java supports build-mode: none.
+#      #
+#      # This avoids another Maven build.
+#      # ========================================================
+#
+#      - name: Initialize CodeQL
+#        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938
+#        with:
+#          languages: java
+#          build-mode: none
+#
+#      # ----------------------------------------------------------
+#      # CodeQL Analysis
+#      # ----------------------------------------------------------
+#
+#      - name: CodeQL Analysis
+#        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938
+#        with:
+#          category: "/language:java"
+#
+#
+#  # ============================================================
+#  # 3. DOCKER BUILD + PUSH + IMAGE SECURITY SCAN
+#  #
+#  # Runs only after:
+#  #
+#  # build-test-quality
+#  # security-scan
+#  #
+#  # succeeds.
+#  # ============================================================
+#
+#  docker:
+#    name: Build, Scan & Push Docker Image
+#
+#    needs:
+#      - build-test-quality
+#      - security-scan
+#
+#    runs-on: ubuntu-latest
+#
+#    permissions:
+#      contents: read
+#
+#    steps:
+#
+#      # ----------------------------------------------------------
+#      # Checkout
+#      # ----------------------------------------------------------
+#
+#      - name: Checkout source code
+#        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+#
+#      # ----------------------------------------------------------
+#      # Download JAR generated by Maven job
+#      # ----------------------------------------------------------
+#
+#      - name: Download Application Artifact
+#        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+#        with:
+#          name: application
+#          path: target
+#
+#      # ----------------------------------------------------------
+#      # Show artifact
+#      # ----------------------------------------------------------
+#
+#      - name: Verify Application Artifact
+#        run: |
+#          echo "Application artifact:"
+#          ls -lh target/
+#
+#      # ----------------------------------------------------------
+#      # Setup Docker Buildx
+#      # ----------------------------------------------------------
+#
+#      - name: Set up Docker Buildx
+#        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+#
+#      # ----------------------------------------------------------
+#      # Login Docker Hub
+#      # ----------------------------------------------------------
+#
+#      - name: Login to Docker Hub
+#        uses: docker/login-action@0a596b2e7a325f0cedf8e9bd21ab002cbd3c9241
+#        with:
+#          username: ${{ vars.DOCKERHUB_USERNAME }}
+#          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+#
+#      # ----------------------------------------------------------
+#      # Docker Metadata
+#      # ----------------------------------------------------------
+#
+#      - name: Extract Docker Metadata
+#        id: meta
+#        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
+#        with:
+#          images: ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}
+#          tags: |
+#            type=raw,value=${{ env.IMAGE_TAG }}
+#            type=raw,value=${{ env.APP_VERSION }}
+#
+#      # ----------------------------------------------------------
+#      # Build and Push Docker Image
+#      # ----------------------------------------------------------
+#
+#      - name: Build and Push Docker Image
+#        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+#        with:
+#          context: .
+#          push: true
+#
+#          tags: |
+#            ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}
+#            ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.APP_VERSION }}
+#
+#          labels: ${{ steps.meta.outputs.labels }}
+#
+#      # ----------------------------------------------------------
+#      # Trivy Docker Image Scan
+#      # ----------------------------------------------------------
+#
+#      - name: Scan Docker Image
+#        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+#        with:
+#          image-ref: ${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}
+#          severity: CRITICAL,HIGH
+#          ignore-unfixed: true
+#
+#
+#  # ============================================================
+#  # 4. DEPLOY TO EC2
+#  # ============================================================
+#
+#  deploy:
+#    name: Deploy to EC2
+#
+#    needs:
+#      - docker
+#
+#    runs-on: ubuntu-latest
+#
+#    steps:
+#
+#      # ----------------------------------------------------------
+#      # Deploy
+#      # ----------------------------------------------------------
+#
+#      - name: Deploy Application to EC2
+#        uses: appleboy/ssh-action@2ead5e36573f08b82fbfce1504f1a4b05a647c6f
+#        with:
+#          host: ${{ vars.EC2_HOST }}
+#          username: ${{ vars.EC2_USERNAME }}
+#          key: ${{ secrets.EC2_PASSWORD }}
+#
+#          script: |
+#
+#            set -e
+#
+#            # ==================================================
+#            # Variables
+#            # ==================================================
+#
+#            IMAGE="${{ vars.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}"
+#            CONTAINER="${{ env.CONTAINER_NAME }}"
+#
+#            echo "=========================================="
+#            echo "Starting deployment"
+#            echo "=========================================="
+#
+#            echo "Application : ${{ env.APP_NAME }}"
+#            echo "Version     : ${{ env.APP_VERSION }}"
+#            echo "Image       : $IMAGE"
+#            echo "Container   : $CONTAINER"
+#
+#            echo "=========================================="
+#
+#            # ==================================================
+#            # Pull image
+#            # ==================================================
+#
+#            echo "Pulling Docker image..."
+#
+#            docker pull "$IMAGE"
+#
+#            echo "Image pulled successfully."
+#
+#            # ==================================================
+#            # Stop old container
+#            # ==================================================
+#
+#            echo "Stopping existing container..."
+#
+#            docker stop "$CONTAINER" || true
+#
+#            # ==================================================
+#            # Remove old container
+#            # ==================================================
+#
+#            echo "Removing existing container..."
+#
+#            docker rm "$CONTAINER" || true
+#
+#            # ==================================================
+#            # Start new container
+#            # ==================================================
+#
+#            echo "Starting new container..."
+#
+#            docker run -d \
+#              --name "$CONTAINER" \
+#              --restart unless-stopped \
+#              -p 8080:8080 \
+#              "$IMAGE"
+#
+#            echo "Container started."
+#
+#            # ==================================================
+#            # Wait for Spring Boot
+#            # ==================================================
+#
+#            echo "Waiting for Spring Boot..."
+#
+#            sleep 15
+#
+#            # ==================================================
+#            # Check container
+#            # ==================================================
+#
+#            echo "Checking container status..."
+#
+#            if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
+#
+#              echo "Container is running."
+#
+#            else
+#
+#              echo "ERROR: Container failed to start."
+#
+#              echo "=========================================="
+#              echo "Container logs"
+#              echo "=========================================="
+#
+#              docker logs "$CONTAINER" || true
+#
+#              exit 1
+#
+#            fi
+#
+#            # ==================================================
+#            # Spring Boot Actuator Health Check
+#            #
+#            # You already have spring-boot-starter-actuator
+#            # in your pom.xml.
+#            # ==================================================
+#
+#            echo "Checking Spring Boot health..."
+#
+#            HEALTH_OK=false
+#
+#            for i in {1..12}; do
+#
+#              if curl \
+#                --fail \
+#                --silent \
+#                --show-error \
+#                http://localhost:8080/actuator/health; then
+#
+#                echo ""
+#                echo "Application health check passed."
+#
+#                HEALTH_OK=true
+#                break
+#
+#              fi
+#
+#              echo "Health check attempt $i failed."
+#              echo "Waiting 5 seconds..."
+#
+#              sleep 5
+#
+#            done
+#
+#            if [ "$HEALTH_OK" != "true" ]; then
+#
+#              echo "ERROR: Application health check failed."
+#
+#              echo "=========================================="
+#              echo "Container logs"
+#              echo "=========================================="
+#
+#              docker logs "$CONTAINER" || true
+#
+#              exit 1
+#
+#            fi
+#
+#            # ==================================================
+#            # Running containers
+#            # ==================================================
+#
+#            echo "=========================================="
+#            echo "Running containers"
+#            echo "=========================================="
+#
+#            docker ps
+#
+#            # ==================================================
+#            # Cleanup
+#            # ==================================================
+#
+#            echo "Cleaning unused Docker images..."
+#
+#            docker image prune -f
+#
+#            # ==================================================
+#            # Deployment successful
+#            # ==================================================
+#
+#            echo "=========================================="
+#            echo "Deployment successful!"
+#            echo "=========================================="
