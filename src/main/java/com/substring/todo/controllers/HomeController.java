@@ -10,7 +10,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 @Controller
-@CrossOrigin(origins = "*")
+//@CrossOrigin(origins = "*")
 public class HomeController {
 
     @GetMapping("/")

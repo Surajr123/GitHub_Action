@@ -19,12 +19,12 @@ jobs:
       pull-requests: write
       checks: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@2ead5e36573f08b82fbfce1504f1a4b05a647c6f
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - name: 'Qodana Scan'
-        uses: JetBrains/qodana-action@v2025.3
+        uses: JetBrains/qodana-action@
         env:
           QODANA_TOKEN: ${{ secrets.QODANA_TOKEN }}
         with:
